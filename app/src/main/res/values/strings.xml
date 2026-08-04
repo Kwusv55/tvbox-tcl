@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TCL TVBox</string>
+    <string name="search_hint">输入影视名称</string>
+    <string name="search">搜索</string>
+    <string name="import_rule">导入规则</string>
+    <string name="choose_file">文件</string>
+    <string name="source_label">当前规则</string>
+    <string name="empty_results">暂无结果。先导入公开站点规则。</string>
+    <string name="rule_input_hint">规则 URL 或 JSON</string>
+    <string name="import_dialog_title">导入轻量规则</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确定</string>
+    <string name="loading">加载中…</string>
+    <string name="no_rule">未配置规则</string>
+    <string name="rule_saved">规则已保存</string>
+    <string name="select_episode">选择剧集</string>
+    <string name="play_error">无法播放此地址</string>
+    <string name="rule_format">规则需包含 baseUrl/search/episodes/video 字段</string>
+</resources>

@@ -1,0 +1,56 @@
+# TCL 适配版
+
+目标设备：照片中的 `V8-MS81802-LF1V112`，Android `4.2.2 / API 17`，约 `695 MB RAM`。
+
+本目录增加轻量 Android 客户端：
+
+- `minSdk 17`，横屏，遥控器焦点导航。
+- 纯 Java 平台控件，无 AndroidX/Media3，降低旧电视内存压力。
+- 支持规则 URL、JSON 粘贴、文件导入；规则保存在电视本地。
+- 支持公开 HTML 规则的搜索、剧集提取、相对 URL、`m3u8/mp4` 播放地址。
+- API 17 上为 HTTPS 尝试启用 TLS 1.2。
+
+## 规则格式
+
+客户端执行数据规则，不执行 JavaScript、Spider JAR 或外部解析器。最小示例：
+
+```json
+{
+  "id": "example",
+  "name": "示例站点",
+  "baseUrl": "https://example.invalid",
+  "search": {
+    "url": "https://example.invalid/search/{keyword}",
+    "itemPattern": "<a[^>]+href=\\\"([^\\\"]+)\\\"[^>]*>(.*?)</a>",
+    "urlGroup": 1,
+    "titleGroup": 2
+  },
+  "episodes": {
+    "itemPattern": "<a[^>]+href=\\\"([^\\\"]+)\\\"[^>]*>(.*?)</a>",
+    "urlGroup": 1,
+    "titleGroup": 2
+  },
+  "video": {
+    "urlPattern": "(https?://[^\\\"']+\\.(?:m3u8|mp4)(?:\\?[^\\\"']*)?)",
+    "urlGroup": 1
+  },
+  "charset": "UTF-8"
+}
+```
+
+`{keyword}` 和 `{q}` 会替换为 URL 编码后的搜索词。`baseUrl` 用于补全相对链接。`filter` 为可选的标题/链接包含过滤词。
+
+## qist/tvbox 说明
+
+上游 `qist/tvbox` 是配置集合，不是 Android APK。`jsm.json` 等配置依赖专用 TVBox 内核、Spider JAR、JavaScript 和 `csp_*` 实现；本适配客户端不会执行这些代码，因此直接导入含 `sites` 的上游配置会提示格式不兼容。需要完整 qist 配置时，使用原生 TVBox 内核；需要本客户端时，转换为上面的轻量规则格式。
+
+## 构建与安装
+
+需要 JDK 11、Android SDK 33、Gradle 7.6.4：
+
+```text
+gradle assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+也可使用 GitHub Actions 的 `Android APK` workflow，下载 `tvbox-tcl-debug` artifact，再通过 U 盘或 ADB 安装。APK 为通用 Java APK，不依赖 App Bundle。

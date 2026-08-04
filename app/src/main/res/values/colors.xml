@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="tvbox_background">#101318</color>
+    <color name="tvbox_panel">#1C222B</color>
+    <color name="tvbox_accent">#4DB6FF</color>
+    <color name="tvbox_text">#F2F5F7</color>
+    <color name="tvbox_muted">#AAB5C0</color>
+</resources>

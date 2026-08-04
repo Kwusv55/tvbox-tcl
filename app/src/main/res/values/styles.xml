@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Theme.Holo is available on API 11+, unlike Theme.Material (API 21+). -->
+    <style name="AppTheme" parent="android:style/Theme.Holo.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/tvbox_background</item>
+        <item name="android:colorAccent">@color/tvbox_accent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

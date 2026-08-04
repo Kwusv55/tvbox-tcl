@@ -1,0 +1,14 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // AGP 7.4.x can be built with JDK 11 and still produces API 19 apps.
+        classpath 'com.android.tools.build:gradle:7.4.2'
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}
