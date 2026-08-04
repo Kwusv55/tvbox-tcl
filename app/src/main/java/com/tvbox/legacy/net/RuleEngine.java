@@ -155,9 +155,8 @@ public final class RuleEngine {
                     continue;
                 }
                 String typeName = item.optString("type_name", "");
-                if (!TextUtils.isEmpty(rule.category)
-                        && typeName.toLowerCase(Locale.US).indexOf(
-                        rule.category.toLowerCase(Locale.US)) < 0) {
+                if (!TextUtils.isEmpty(typeName)
+                        && !matchesCategory(typeName, rule.category)) {
                     continue;
                 }
                 String title = item.optString("vod_name", item.optString("name", ""));
@@ -172,6 +171,25 @@ public final class RuleEngine {
         } catch (Exception error) {
             throw new IOException("invalid CMS response", error);
         }
+    }
+
+    private static boolean matchesCategory(String actual, String requested) {
+        if (TextUtils.isEmpty(requested)) {
+            return true;
+        }
+        String actualLower = actual.toLowerCase(Locale.US);
+        String requestedLower = requested.toLowerCase(Locale.US);
+        if (actualLower.indexOf(requestedLower) >= 0) {
+            return true;
+        }
+        // CMS providers use both "动漫" and "动画片" for the same catalog.
+        boolean animeRequest = requestedLower.indexOf("动漫") >= 0
+                || requestedLower.indexOf("动画") >= 0
+                || requestedLower.indexOf("anime") >= 0;
+        return animeRequest && (actualLower.indexOf("动漫") >= 0
+                || actualLower.indexOf("动画") >= 0
+                || actualLower.indexOf("anime") >= 0
+                || actualLower.indexOf("cartoon") >= 0);
     }
 
     private static List<Episode> cmsEpisodes(SiteRule rule, String detailUrl) throws IOException {
