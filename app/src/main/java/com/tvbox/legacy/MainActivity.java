@@ -7,16 +7,19 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.text.format.Formatter;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -25,35 +28,44 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.tvbox.legacy.model.Episode;
-import com.tvbox.legacy.model.RuleStore;
 import com.tvbox.legacy.model.SiteRule;
 import com.tvbox.legacy.model.VideoSource;
 import com.tvbox.legacy.net.HttpClient;
+import com.tvbox.legacy.net.RuleCatalog;
 import com.tvbox.legacy.net.RuleEngine;
-
-import org.json.JSONException;
+import com.tvbox.legacy.net.RuleUploadServer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 
-/** Small D-pad-first launcher for old TCL Android TV firmware. */
+/** Modern D-pad-first TV shell for the API 17 TCL firmware. */
 public class MainActivity extends Activity {
-    private static final int REQUEST_RULE_FILE = 17;
-    private static final String PREFS = "tcl-tvbox";
-    private static final String PREF_RULE_JSON = "rule-json";
-    private static final int MAX_RULE_BYTES = 2 * 1024 * 1024;
+    private static final int REQUEST_CATALOG_FILE = 17;
+    private static final int MAX_CATALOG_BYTES = 2 * 1024 * 1024;
+    private static final String PREFS = "tcl-tvbox-ui";
+    private static final String PREF_ACTIVE_ID = "active-rule-id";
 
-    private EditText ruleInput;
-    private EditText searchInput;
-    private TextView ruleStatus;
-    private TextView status;
+    private final List<SiteRule> catalog = new ArrayList<SiteRule>();
+    private RuleSourceAdapter sourceAdapter;
+    private VideoAdapter videoAdapter;
+    private ListView sourceList;
     private ListView resultList;
-    private ArrayAdapter<VideoSource> resultAdapter;
+    private EditText searchInput;
+    private TextView activeRuleLabel;
+    private TextView resultStatus;
+    private TextView syncStatus;
+    private Button uploadButton;
     private SiteRule activeRule;
-    private String activeRuleJson;
+    private RuleUploadServer uploadServer;
+    private boolean syncRunning;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -63,184 +75,309 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         buildUi();
-        restoreRule();
+        loadCatalog();
     }
 
     private void buildUi() {
-        int pad = dp(20);
+        int pad = dp(22);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, dp(14), pad, dp(10));
-        root.setBackgroundColor(Color.rgb(16, 19, 24));
+        root.setBackgroundColor(Color.rgb(8, 13, 19));
 
-        TextView title = text("TCL TVBox", 24, Color.WHITE);
-        root.addView(title, new LinearLayout.LayoutParams(-1, dp(42)));
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.VERTICAL);
+        TextView eyebrow = label("TCL TVBOX  /  API 17", 11, Color.rgb(86, 214, 255));
+        brand.addView(eyebrow, new LinearLayout.LayoutParams(-1, dp(18)));
+        TextView title = label("动漫片库", 28, Color.WHITE);
+        brand.addView(title, new LinearLayout.LayoutParams(-1, dp(40)));
+        header.addView(brand, new LinearLayout.LayoutParams(0, dp(58), 1));
 
-        TextView subtitle = text("Android 4.2.2  ·  遥控器模式  ·  轻量公开规则", 14,
-                Color.rgb(170, 181, 192));
-        root.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(30)));
+        syncStatus = label("正在读取规则目录", 13, Color.rgb(164, 180, 194));
+        syncStatus.setGravity(Gravity.CENTER);
+        syncStatus.setBackgroundResource(R.drawable.modern_chip);
+        header.addView(syncStatus, new LinearLayout.LayoutParams(dp(220), dp(42)));
+        root.addView(header, new LinearLayout.LayoutParams(-1, dp(70)));
 
-        LinearLayout ruleRow = new LinearLayout(this);
-        ruleRow.setGravity(Gravity.CENTER_VERTICAL);
-        ruleInput = edit(getString(com.tvbox.legacy.R.string.rule_input_hint));
-        ruleRow.addView(ruleInput, weightParams(1));
-        Button importButton = button(getString(com.tvbox.legacy.R.string.import_rule));
-        importButton.setOnClickListener(new View.OnClickListener() {
+        LinearLayout body = new LinearLayout(this);
+        body.setGravity(Gravity.FILL);
+
+        LinearLayout sourcePanel = panel();
+        TextView sourceTitle = label("动漫来源", 18, Color.WHITE);
+        sourcePanel.addView(sourceTitle, new LinearLayout.LayoutParams(-1, dp(36)));
+        TextView sourceHint = label("自动更新 · 选择播放源", 12, Color.rgb(145, 163, 178));
+        sourcePanel.addView(sourceHint, new LinearLayout.LayoutParams(-1, dp(26)));
+        sourceList = new ListView(this);
+        sourceList.setDivider(null);
+        sourceList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+        sourceAdapter = new RuleSourceAdapter();
+        sourceList.setAdapter(sourceAdapter);
+        sourceList.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
-            public void onClick(View view) {
-                showImportDialog();
+            public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                selectRule(position);
             }
         });
-        ruleRow.addView(importButton, buttonParams());
-        Button fileButton = button(getString(com.tvbox.legacy.R.string.choose_file));
-        fileButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                chooseRuleFile();
-            }
-        });
-        ruleRow.addView(fileButton, buttonParams());
-        root.addView(ruleRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        sourcePanel.addView(sourceList, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView sourceFooter = label("手机上传可替换整个目录", 11, Color.rgb(113, 132, 148));
+        sourcePanel.addView(sourceFooter, new LinearLayout.LayoutParams(-1, dp(30)));
+        LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(dp(272), -1);
+        sourceParams.setMargins(0, 0, dp(14), 0);
+        body.addView(sourcePanel, sourceParams);
 
-        ruleStatus = text(getString(com.tvbox.legacy.R.string.no_rule), 13,
-                Color.rgb(170, 181, 192));
-        root.addView(ruleStatus, new LinearLayout.LayoutParams(-1, dp(28)));
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        activeRuleLabel = label("请选择动漫来源", 22, Color.WHITE);
+        content.addView(activeRuleLabel, new LinearLayout.LayoutParams(-1, dp(42)));
 
-        LinearLayout searchRow = new LinearLayout(this);
-        searchRow.setGravity(Gravity.CENTER_VERTICAL);
-        searchInput = edit(getString(com.tvbox.legacy.R.string.search_hint));
-        searchInput.setSingleLine(true);
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchInput = edit(getString(R.string.search_hint));
         searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        searchRow.addView(searchInput, weightParams(1));
-        Button searchButton = button(getString(com.tvbox.legacy.R.string.search));
+        actionRow.addView(searchInput, weightedParams(1));
+        Button searchButton = action("搜索");
         searchButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 search();
             }
         });
-        searchRow.addView(searchButton, buttonParams());
-        root.addView(searchRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        actionRow.addView(searchButton, actionParams(94));
+        Button syncButton = action("更新");
+        syncButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                syncCatalog(true);
+            }
+        });
+        actionRow.addView(syncButton, actionParams(86));
+        uploadButton = action("手机上传");
+        uploadButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                toggleUploadServer();
+            }
+        });
+        actionRow.addView(uploadButton, actionParams(112));
+        Button fileButton = action("本地文件");
+        fileButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                chooseCatalogFile();
+            }
+        });
+        actionRow.addView(fileButton, actionParams(104));
+        content.addView(actionRow, new LinearLayout.LayoutParams(-1, dp(56)));
 
-        status = text(getString(com.tvbox.legacy.R.string.empty_results), 14,
-                Color.rgb(170, 181, 192));
-        root.addView(status, new LinearLayout.LayoutParams(-1, dp(30)));
-
+        resultStatus = label(getString(R.string.empty_results), 13, Color.rgb(145, 163, 178));
+        content.addView(resultStatus, new LinearLayout.LayoutParams(-1, dp(30)));
         resultList = new ListView(this);
-        resultList.setDividerHeight(dp(1));
-        resultList.setBackgroundColor(Color.rgb(28, 34, 43));
-        resultAdapter = new ArrayAdapter<VideoSource>(this,
-                android.R.layout.simple_list_item_1);
-        resultList.setAdapter(resultAdapter);
+        resultList.setDivider(null);
+        videoAdapter = new VideoAdapter();
+        resultList.setAdapter(videoAdapter);
         resultList.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                loadEpisodes(resultAdapter.getItem(position));
+                loadEpisodes(videoAdapter.getItem(position));
             }
         });
-        root.addView(resultList, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        TextView footer = text("仅解析你提供的公开 HTTP/HTTPS 规则；qist/tvbox 的 sites 配置需原生 TVBox 内核。",
-                12, Color.rgb(140, 150, 160));
-        root.addView(footer, new LinearLayout.LayoutParams(-1, dp(26)));
+        content.addView(resultList, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView footer = label("规则来自公开目录 · 播放能力取决于 TCL 系统解码器", 11,
+                Color.rgb(113, 132, 148));
+        content.addView(footer, new LinearLayout.LayoutParams(-1, dp(26)));
+        body.addView(content, new LinearLayout.LayoutParams(0, -1, 1));
+        root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
 
         setContentView(root);
-        ruleInput.requestFocus();
+        sourceList.requestFocus();
     }
 
-    private void restoreRule() {
-        SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
-        activeRuleJson = preferences.getString(PREF_RULE_JSON, "");
-        if (TextUtils.isEmpty(activeRuleJson)) {
+    private void loadCatalog() {
+        new AsyncTask<Void, Void, TaskResult<List<SiteRule>>>() {
+            @Override
+            protected TaskResult<List<SiteRule>> doInBackground(Void... values) {
+                try {
+                    return TaskResult.success(RuleCatalog.parse(RuleCatalog.load(MainActivity.this)));
+                } catch (Exception error) {
+                    return TaskResult.failure(error);
+                }
+            }
+
+            @Override
+            protected void onPostExecute(TaskResult<List<SiteRule>> result) {
+                if (result.error != null) {
+                    showError("规则目录读取失败: " + shortMessage(result.error));
+                    return;
+                }
+                applyCatalog(result.value);
+                syncStatus.setText("内置目录  ·  " + result.value.size() + " 个动漫源");
+                if (RuleCatalog.shouldRefresh(MainActivity.this)) {
+                    syncCatalog(false);
+                }
+            }
+        }.execute();
+    }
+
+    private void applyCatalog(List<SiteRule> rules) {
+        catalog.clear();
+        catalog.addAll(rules);
+        sourceAdapter.notifyDataSetChanged();
+        if (catalog.isEmpty()) {
+            activeRule = null;
+            activeRuleLabel.setText("没有可用规则");
             return;
         }
-        try {
-            activeRule = RuleStore.parse(activeRuleJson);
-            ruleStatus.setText(getString(R.string.source_label) + ": " + activeRule.displayName());
-            ruleInput.setText(activeRuleJson);
-        } catch (JSONException error) {
-            activeRule = null;
-            ruleStatus.setText(getString(R.string.rule_format));
-        }
-    }
-
-    private void showImportDialog() {
-        final EditText input = edit(getString(R.string.rule_input_hint));
-        input.setGravity(Gravity.TOP | Gravity.LEFT);
-        input.setSingleLine(false);
-        input.setMinLines(5);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
-                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        input.setText(ruleInput.getText().toString());
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(getString(R.string.import_dialog_title))
-                .setView(input)
-                .setNegativeButton(getString(R.string.cancel), null)
-                .setPositiveButton(getString(R.string.confirm), null)
-                .create();
-        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
-            @Override
-            public void onShow(DialogInterface dialogInterface) {
-                AlertDialog alert = (AlertDialog) dialogInterface;
-                alert.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View view) {
-                        importRule(input.getText().toString().trim());
-                        ((AlertDialog) view.getTag()).dismiss();
-                    }
-                });
-                alert.getButton(AlertDialog.BUTTON_POSITIVE).setTag(alert);
+        String savedId = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ACTIVE_ID, "");
+        int selected = 0;
+        for (int index = 0; index < catalog.size(); index++) {
+            if (catalog.get(index).id.equals(savedId)) {
+                selected = index;
+                break;
             }
-        });
-        dialog.show();
+        }
+        sourceList.setSelection(selected);
+        selectRule(selected);
     }
 
-    private void chooseRuleFile() {
+    private void selectRule(int position) {
+        if (position < 0 || position >= catalog.size()) {
+            return;
+        }
+        activeRule = catalog.get(position);
+        sourceList.setItemChecked(position, true);
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(PREF_ACTIVE_ID, activeRule.id).apply();
+        activeRuleLabel.setText(activeRule.name);
+        resultStatus.setText(activeRule.isCms() ? "CMS JSON 源 · 输入片名开始搜索" : "HTML 规则源 · 输入片名开始搜索");
+        videoAdapter.clear();
+    }
+
+    private void syncCatalog(final boolean manual) {
+        if (syncRunning) {
+            return;
+        }
+        syncRunning = true;
+        syncStatus.setText(manual ? "正在更新目录…" : "后台检查更新…");
+        new AsyncTask<Void, Void, TaskResult<String>>() {
+            @Override
+            protected TaskResult<String> doInBackground(Void... values) {
+                try {
+                    return TaskResult.success(RuleCatalog.fetchRemote());
+                } catch (Exception error) {
+                    return TaskResult.failure(error);
+                }
+            }
+
+            @Override
+            protected void onPostExecute(TaskResult<String> result) {
+                syncRunning = false;
+                if (result.error != null) {
+                    syncStatus.setText("本地目录 · 自动更新失败");
+                    if (manual) {
+                        showError("目录更新失败: " + shortMessage(result.error));
+                    }
+                    return;
+                }
+                try {
+                    RuleCatalog.save(MainActivity.this, result.value, "GitHub 自动更新");
+                    applyCatalog(RuleCatalog.parse(result.value));
+                    syncStatus.setText("已更新 · " + catalog.size() + " 个动漫源");
+                } catch (Exception error) {
+                    showError("目录校验失败: " + shortMessage(error));
+                }
+            }
+        }.execute();
+    }
+
+    private void chooseCatalogFile() {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("application/json");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         try {
-            startActivityForResult(intent, REQUEST_RULE_FILE);
+            startActivityForResult(intent, REQUEST_CATALOG_FILE);
         } catch (RuntimeException error) {
-            Toast.makeText(this, "系统不支持文件选择，请粘贴规则 URL/JSON", Toast.LENGTH_LONG).show();
+            showError("系统文件选择不可用，请使用手机上传");
         }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_RULE_FILE || resultCode != RESULT_OK || data == null) {
+        if (requestCode != REQUEST_CATALOG_FILE || resultCode != RESULT_OK || data == null
+                || data.getData() == null) {
             return;
         }
-        Uri uri = data.getData();
-        if (uri == null) {
-            return;
-        }
-        status.setText(getString(R.string.loading));
-        new ReadFileTask().execute(uri);
+        new ReadCatalogTask().execute(data.getData());
     }
 
-    private void importRule(final String value) {
-        if (TextUtils.isEmpty(value)) {
-            Toast.makeText(this, "规则内容为空", Toast.LENGTH_SHORT).show();
+    private void toggleUploadServer() {
+        if (uploadServer != null && uploadServer.isRunning()) {
+            uploadServer.stop();
+            uploadButton.setText("手机上传");
+            syncStatus.setText("手机上传已停止");
             return;
         }
-        ruleInput.setText(value);
-        status.setText(getString(R.string.loading));
-        new ImportTask().execute(value);
+        final String pin = String.valueOf(100000 + new Random().nextInt(900000));
+        uploadServer = new RuleUploadServer(RuleUploadServer.DEFAULT_PORT, pin,
+                new RuleUploadServer.Callback() {
+                    @Override
+                    public void onRuleUploaded(final String json) {
+                        importCatalog(json, "手机上传");
+                    }
+
+                    @Override
+                    public void onRuleUploaded(final String json, String fileName) {
+                        importCatalog(json, TextUtils.isEmpty(fileName) ? "手机上传" : fileName);
+                    }
+
+                    @Override
+                    public void onError(final Exception error) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                showError("手机上传服务错误: " + shortMessage(error));
+                            }
+                        });
+                    }
+                });
+        uploadServer.start();
+        if (!uploadServer.isRunning()) {
+            showError("手机上传端口启动失败");
+            return;
+        }
+        uploadButton.setText("停止上传");
+        String url = uploadServer.getUploadUrl(localIp());
+        syncStatus.setText("手机上传 · " + url);
+        new AlertDialog.Builder(this)
+                .setTitle("手机上传规则")
+                .setMessage("手机与电视连接同一 Wi-Fi。\n\n打开：" + url
+                        + "\nPIN：" + pin + "\n\n上传 JSON 后，电视自动校验并切换目录。")
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
+    private void importCatalog(final String raw, final String source) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                new ImportCatalogTask(source).execute(raw);
+            }
+        });
     }
 
     private void search() {
         if (activeRule == null) {
-            Toast.makeText(this, getString(R.string.no_rule), Toast.LENGTH_SHORT).show();
+            showError("先选择动漫来源");
             return;
         }
-        final String keyword = searchInput.getText().toString().trim();
+        String keyword = searchInput.getText().toString().trim();
         if (TextUtils.isEmpty(keyword)) {
-            Toast.makeText(this, "请输入影视名称", Toast.LENGTH_SHORT).show();
+            showError("请输入片名");
             return;
         }
-        status.setText(getString(R.string.loading));
+        resultStatus.setText("搜索中…");
         new SearchTask().execute(keyword);
     }
 
@@ -248,25 +385,26 @@ public class MainActivity extends Activity {
         if (source == null || TextUtils.isEmpty(source.detailUrl)) {
             return;
         }
-        status.setText(getString(R.string.loading));
+        resultStatus.setText("正在读取剧集…");
         new EpisodeTask().execute(source);
     }
 
     private void showEpisodes(final List<Episode> episodes) {
         if (episodes == null || episodes.isEmpty()) {
-            Toast.makeText(this, "没有可播放剧集", Toast.LENGTH_SHORT).show();
+            showError("没有可播放剧集");
             return;
         }
         if (episodes.size() == 1) {
             playEpisode(episodes.get(0));
             return;
         }
-        final ListView list = new ListView(this);
+        ListView list = new ListView(this);
+        list.setDivider(null);
         list.setAdapter(new ArrayAdapter<Episode>(this, android.R.layout.simple_list_item_1, episodes));
         final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(getString(R.string.select_episode))
+                .setTitle("选择剧集")
                 .setView(list)
-                .setNegativeButton(getString(R.string.cancel), null)
+                .setNegativeButton("取消", null)
                 .create();
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
@@ -280,7 +418,7 @@ public class MainActivity extends Activity {
     }
 
     private void playEpisode(final Episode episode) {
-        status.setText(getString(R.string.loading));
+        resultStatus.setText("正在解析播放地址…");
         new ResolveTask().execute(episode);
     }
 
@@ -291,48 +429,64 @@ public class MainActivity extends Activity {
         startActivity(intent);
     }
 
-    private Button button(String label) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextSize(16);
-        button.setTextColor(Color.WHITE);
-        button.setAllCaps(false);
-        button.setFocusable(true);
-        button.setBackgroundResource(R.drawable.focusable_panel);
-        return button;
+    @Override
+    protected void onDestroy() {
+        if (uploadServer != null) {
+            uploadServer.stop();
+        }
+        super.onDestroy();
+    }
+
+    private LinearLayout panel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(14), dp(14), dp(10), dp(10));
+        panel.setBackgroundResource(R.drawable.modern_panel);
+        return panel;
+    }
+
+    private TextView label(String value, int size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        return view;
     }
 
     private EditText edit(String hint) {
-        EditText edit = new EditText(this);
-        edit.setHint(hint);
-        edit.setHintTextColor(Color.rgb(145, 156, 168));
-        edit.setTextColor(Color.WHITE);
-        edit.setTextSize(16);
-        edit.setSingleLine(true);
-        edit.setPadding(dp(12), 0, dp(12), 0);
-        edit.setBackgroundResource(R.drawable.focusable_panel);
-        edit.setFocusable(true);
-        return edit;
+        EditText view = new EditText(this);
+        view.setHint(hint);
+        view.setSingleLine(true);
+        view.setHintTextColor(Color.rgb(117, 139, 155));
+        view.setTextColor(Color.WHITE);
+        view.setTextSize(17);
+        view.setPadding(dp(14), 0, dp(14), 0);
+        view.setBackgroundResource(R.drawable.modern_input);
+        view.setFocusable(true);
+        return view;
     }
 
-    private TextView text(String value, int size, int color) {
-        TextView text = new TextView(this);
-        text.setText(value);
-        text.setTextSize(size);
-        text.setTextColor(color);
-        text.setGravity(Gravity.CENTER_VERTICAL);
-        return text;
+    private Button action(String text) {
+        Button view = new Button(this);
+        view.setText(text);
+        view.setTextSize(15);
+        view.setTextColor(Color.WHITE);
+        view.setAllCaps(false);
+        view.setFocusable(true);
+        view.setBackgroundResource(R.drawable.modern_button);
+        return view;
     }
 
-    private LinearLayout.LayoutParams weightParams(float weight) {
+    private LinearLayout.LayoutParams weightedParams(float weight) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, weight);
         params.setMargins(0, 0, dp(8), 0);
         return params;
     }
 
-    private LinearLayout.LayoutParams buttonParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(112), -1);
-        params.setMargins(0, 0, dp(8), 0);
+    private LinearLayout.LayoutParams actionParams(int width) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(width), -1);
+        params.setMargins(0, 0, dp(7), 0);
         return params;
     }
 
@@ -340,53 +494,48 @@ public class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    private void saveRule(String raw, SiteRule rule) {
-        activeRuleJson = raw;
-        activeRule = rule;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(PREF_RULE_JSON, raw).apply();
-        ruleStatus.setText(getString(R.string.source_label) + ": " + rule.displayName());
+    private String localIp() {
+        try {
+            WifiManager wifi = (WifiManager) getSystemService(WIFI_SERVICE);
+            if (wifi != null && wifi.getConnectionInfo() != null
+                    && wifi.getConnectionInfo().getIpAddress() != 0) {
+                return Formatter.formatIpAddress(wifi.getConnectionInfo().getIpAddress());
+            }
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                Enumeration<InetAddress> addresses = interfaces.nextElement().getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (!address.isLoopbackAddress() && address.getHostAddress().indexOf(':') < 0) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "电视IP";
     }
 
-    private void showTaskError(String message) {
-        status.setText(message);
+    private void showError(String message) {
+        resultStatus.setText(message);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
-    private final class ImportTask extends AsyncTask<String, Void, TaskResult<SiteRule>> {
-        private String raw;
-
-        @Override
-        protected TaskResult<SiteRule> doInBackground(String... values) {
-            raw = values[0];
-            try {
-                if (!looksLikeJson(raw)) {
-                    raw = HttpClient.get(raw, null).text("UTF-8");
-                }
-                return TaskResult.success(RuleStore.parse(raw));
-            } catch (Exception error) {
-                return TaskResult.failure(error);
-            }
-        }
-
-        @Override
-        protected void onPostExecute(TaskResult<SiteRule> result) {
-            if (result.error != null) {
-                showTaskError("规则导入失败: " + shortMessage(result.error));
-                return;
-            }
-            saveRule(raw, result.value);
-            status.setText(getString(R.string.rule_saved));
-        }
+    private static String shortMessage(Exception error) {
+        String message = error.getMessage();
+        return TextUtils.isEmpty(message) ? error.getClass().getSimpleName() : message;
     }
 
-    private final class ReadFileTask extends AsyncTask<Uri, Void, TaskResult<String>> {
+    private final class ReadCatalogTask extends AsyncTask<Uri, Void, TaskResult<String>> {
         @Override
         protected TaskResult<String> doInBackground(Uri... values) {
             InputStream input = null;
             try {
                 input = getContentResolver().openInputStream(values[0]);
-                return TaskResult.success(readLimited(input, MAX_RULE_BYTES));
+                return TaskResult.success(readLimited(input, MAX_CATALOG_BYTES));
             } catch (Exception error) {
                 return TaskResult.failure(error);
             } finally {
@@ -402,10 +551,44 @@ public class MainActivity extends Activity {
         @Override
         protected void onPostExecute(TaskResult<String> result) {
             if (result.error != null) {
-                showTaskError("读取规则失败: " + shortMessage(result.error));
+                showError("读取目录失败: " + shortMessage(result.error));
+            } else {
+                importCatalog(result.value, "本地文件");
+            }
+        }
+    }
+
+    private final class ImportCatalogTask extends AsyncTask<String, Void, TaskResult<List<SiteRule>>> {
+        private final String source;
+        private String raw;
+
+        ImportCatalogTask(String source) {
+            this.source = source;
+        }
+
+        @Override
+        protected TaskResult<List<SiteRule>> doInBackground(String... values) {
+            raw = values[0];
+            try {
+                return TaskResult.success(RuleCatalog.parse(raw));
+            } catch (Exception error) {
+                return TaskResult.failure(error);
+            }
+        }
+
+        @Override
+        protected void onPostExecute(TaskResult<List<SiteRule>> result) {
+            if (result.error != null) {
+                showError("规则目录无效: " + shortMessage(result.error));
                 return;
             }
-            importRule(result.value);
+            try {
+                RuleCatalog.save(MainActivity.this, raw, source);
+                applyCatalog(result.value);
+                syncStatus.setText("已导入 · " + result.value.size() + " 个动漫源");
+            } catch (Exception error) {
+                showError("目录保存失败: " + shortMessage(error));
+            }
         }
     }
 
@@ -422,13 +605,11 @@ public class MainActivity extends Activity {
         @Override
         protected void onPostExecute(TaskResult<List<VideoSource>> result) {
             if (result.error != null) {
-                showTaskError("搜索失败: " + shortMessage(result.error));
+                showError("搜索失败: " + shortMessage(result.error));
                 return;
             }
-            resultAdapter.clear();
-            resultAdapter.addAll(result.value);
-            resultAdapter.notifyDataSetChanged();
-            status.setText(String.format(Locale.US, "找到 %d 个结果", result.value.size()));
+            videoAdapter.setItems(result.value);
+            resultStatus.setText(String.format(Locale.US, "找到 %d 个结果", result.value.size()));
         }
     }
 
@@ -445,10 +626,10 @@ public class MainActivity extends Activity {
         @Override
         protected void onPostExecute(TaskResult<List<Episode>> result) {
             if (result.error != null) {
-                showTaskError("剧集加载失败: " + shortMessage(result.error));
-                return;
+                showError("剧集加载失败: " + shortMessage(result.error));
+            } else {
+                showEpisodes(result.value);
             }
-            showEpisodes(result.value);
         }
     }
 
@@ -466,17 +647,12 @@ public class MainActivity extends Activity {
         @Override
         protected void onPostExecute(TaskResult<EpisodeUrl> result) {
             if (result.error != null) {
-                showTaskError(getString(R.string.play_error) + ": " + shortMessage(result.error));
-                return;
+                showError("播放地址解析失败: " + shortMessage(result.error));
+            } else {
+                openPlayer(result.value.url, result.value.episode.title);
+                resultStatus.setText("正在播放");
             }
-            status.setText("");
-            openPlayer(result.value.url, result.value.episode.title);
         }
-    }
-
-    private static boolean looksLikeJson(String value) {
-        String trimmed = value == null ? "" : value.trim();
-        return trimmed.startsWith("{") || trimmed.startsWith("[");
     }
 
     private static String readLimited(InputStream input, int limit) throws IOException {
@@ -490,16 +666,93 @@ public class MainActivity extends Activity {
         while ((count = input.read(buffer)) != -1) {
             total += count;
             if (total > limit) {
-                throw new IOException("rule file is too large");
+                throw new IOException("catalog is too large");
             }
             output.write(buffer, 0, count);
         }
         return output.toString("UTF-8");
     }
 
-    private static String shortMessage(Exception error) {
-        String message = error.getMessage();
-        return TextUtils.isEmpty(message) ? error.getClass().getSimpleName() : message;
+    private final class RuleSourceAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return catalog.size();
+        }
+
+        @Override
+        public SiteRule getItem(int position) {
+            return catalog.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            SiteRule rule = getItem(position);
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(5), dp(8), dp(5));
+            row.setBackgroundResource(R.drawable.modern_item);
+            TextView name = label(rule.name, 15, Color.WHITE);
+            name.setSingleLine(true);
+            row.addView(name, new LinearLayout.LayoutParams(-1, dp(28)));
+            TextView type = label(rule.isCms() ? "CMS JSON · 动漫" : "HTML · 动漫", 11,
+                    Color.rgb(129, 171, 193));
+            row.addView(type, new LinearLayout.LayoutParams(-1, dp(20)));
+            return row;
+        }
+    }
+
+    private final class VideoAdapter extends BaseAdapter {
+        private final List<VideoSource> items = new ArrayList<VideoSource>();
+
+        void setItems(List<VideoSource> values) {
+            items.clear();
+            if (values != null) {
+                items.addAll(values);
+            }
+            notifyDataSetChanged();
+        }
+
+        void clear() {
+            items.clear();
+            notifyDataSetChanged();
+        }
+
+        @Override
+        public int getCount() {
+            return items.size();
+        }
+
+        @Override
+        public VideoSource getItem(int position) {
+            return items.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            VideoSource item = getItem(position);
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), dp(8), dp(12), dp(8));
+            row.setBackgroundResource(R.drawable.modern_item);
+            TextView title = label(item.title, 17, Color.WHITE);
+            title.setSingleLine(true);
+            row.addView(title, new LinearLayout.LayoutParams(-1, dp(28)));
+            TextView hint = label("选择后读取剧集", 11, Color.rgb(129, 151, 166));
+            row.addView(hint, new LinearLayout.LayoutParams(-1, dp(20)));
+            return row;
+        }
     }
 
     private static final class EpisodeUrl {

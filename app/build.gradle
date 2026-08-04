@@ -28,6 +28,13 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    sourceSets {
+        main {
+            // Keep editable rule catalog at repository root and bundle it in APK.
+            assets.srcDirs = ['src/main/assets', '../../rules']
+        }
+    }
+
     lint {
         abortOnError false
     }

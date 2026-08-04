@@ -7,6 +7,9 @@ import com.tvbox.legacy.model.Episode;
 import com.tvbox.legacy.model.SiteRule;
 import com.tvbox.legacy.model.VideoSource;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -36,6 +39,9 @@ public final class RuleEngine {
         if (rule == null) {
             throw new IOException("no active rule");
         }
+        if (rule.isCms()) {
+            return searchCms(rule, keyword);
+        }
         String requestUrl = applyKeyword(rule.searchUrl, keyword);
         if (TextUtils.isEmpty(requestUrl)) {
             requestUrl = applyKeyword(rule.baseUrl, keyword);
@@ -62,6 +68,9 @@ public final class RuleEngine {
         List<Episode> episodes = new ArrayList<Episode>();
         if (TextUtils.isEmpty(detailUrl)) {
             return episodes;
+        }
+        if (rule.isCms()) {
+            return cmsEpisodes(rule, detailUrl);
         }
         if (TextUtils.isEmpty(rule.episodeItemPattern)) {
             episodes.add(new Episode("播放", detailUrl));
@@ -122,12 +131,117 @@ public final class RuleEngine {
         return HttpClient.get(url, headers).text(rule.charset);
     }
 
+    private static List<VideoSource> searchCms(SiteRule rule, String keyword) throws IOException {
+        String endpoint = rule.searchUrl;
+        if (TextUtils.isEmpty(endpoint)) {
+            endpoint = TextUtils.isEmpty(rule.apiUrl) ? rule.baseUrl : rule.apiUrl;
+        }
+        endpoint = applyKeyword(endpoint, keyword);
+        if (endpoint.indexOf("{keyword}") < 0 && endpoint.indexOf("{q}") < 0
+                && endpoint.indexOf("wd=") < 0) {
+            endpoint += endpoint.indexOf('?') >= 0 ? "&" : "?";
+            endpoint += "ac=detail&wd=" + URLEncoder.encode(keyword == null ? "" : keyword, "UTF-8");
+        }
+        try {
+            JSONObject root = new JSONObject(requestText(rule, endpoint));
+            JSONArray list = firstArray(root, "list", "data");
+            List<VideoSource> results = new ArrayList<VideoSource>();
+            if (list == null) {
+                return results;
+            }
+            for (int index = 0; index < list.length() && results.size() < MAX_RESULTS; index++) {
+                JSONObject item = list.optJSONObject(index);
+                if (item == null) {
+                    continue;
+                }
+                String typeName = item.optString("type_name", "");
+                if (!TextUtils.isEmpty(rule.category)
+                        && typeName.toLowerCase(Locale.US).indexOf(
+                        rule.category.toLowerCase(Locale.US)) < 0) {
+                    continue;
+                }
+                String title = item.optString("vod_name", item.optString("name", ""));
+                String id = item.optString("vod_id", item.optString("id", ""));
+                if (TextUtils.isEmpty(title) || TextUtils.isEmpty(id)) {
+                    continue;
+                }
+                results.add(new VideoSource(title, cmsDetailUrl(rule, id),
+                        item.optString("vod_pic", item.optString("pic", ""))));
+            }
+            return results;
+        } catch (Exception error) {
+            throw new IOException("invalid CMS response", error);
+        }
+    }
+
+    private static List<Episode> cmsEpisodes(SiteRule rule, String detailUrl) throws IOException {
+        List<Episode> episodes = new ArrayList<Episode>();
+        String json = requestText(rule, detailUrl);
+        try {
+            JSONObject root = new JSONObject(json);
+            JSONArray list = firstArray(root, "list", "data");
+            if (list == null || list.length() == 0) {
+                episodes.add(new Episode("播放", detailUrl));
+                return episodes;
+            }
+            JSONObject item = list.optJSONObject(0);
+            String playUrl = item == null ? "" : item.optString("vod_play_url", "");
+            if (TextUtils.isEmpty(playUrl)) {
+                episodes.add(new Episode("播放", detailUrl));
+                return episodes;
+            }
+            String firstSource = playUrl.split("\\$\\$\\$", 2)[0];
+            String[] items = firstSource.split("#");
+            for (int index = 0; index < items.length && episodes.size() < MAX_RESULTS; index++) {
+                String entry = items[index].trim();
+                if (entry.length() == 0) {
+                    continue;
+                }
+                int separator = entry.indexOf('$');
+                String title = separator > 0 ? entry.substring(0, separator) : "第" + (index + 1) + "集";
+                String url = separator > 0 ? entry.substring(separator + 1) : entry;
+                if (url.length() > 0) {
+                    episodes.add(new Episode(title.trim(), url.trim()));
+                }
+            }
+            if (episodes.isEmpty()) {
+                episodes.add(new Episode("播放", detailUrl));
+            }
+            return episodes;
+        } catch (Exception error) {
+            throw new IOException("invalid CMS detail response", error);
+        }
+    }
+
+    private static JSONArray firstArray(JSONObject root, String primary, String secondary) {
+        JSONArray array = root.optJSONArray(primary);
+        if (array != null) {
+            return array;
+        }
+        JSONObject dataObject = root.optJSONObject(secondary);
+        if (dataObject != null) {
+            array = dataObject.optJSONArray("list");
+        }
+        if (array == null) {
+            array = root.optJSONArray(secondary);
+        }
+        return array;
+    }
+
+    private static String cmsDetailUrl(SiteRule rule, String id) throws IOException {
+        String endpoint = TextUtils.isEmpty(rule.apiUrl) ? rule.baseUrl : rule.apiUrl;
+        String separator = endpoint.indexOf('?') >= 0 ? "&" : "?";
+        return endpoint + separator + "ac=detail&ids=" + URLEncoder.encode(id, "UTF-8");
+    }
+
     private static String applyKeyword(String template, String keyword) throws IOException {
         if (TextUtils.isEmpty(template)) {
             return "";
         }
         String encoded = URLEncoder.encode(keyword == null ? "" : keyword, "UTF-8");
-        return template.replace("{keyword}", encoded).replace("{q}", encoded);
+        return template.replace("{keyword}", encoded)
+                .replace("{q}", encoded)
+                .replace("{wd}", encoded);
     }
 
     public static String resolveUrl(String base, String value) {

@@ -17,6 +17,10 @@ import java.util.Map;
 public final class SiteRule {
     public final String id;
     public final String name;
+    /** html for regex pages, cms for MacCMS-compatible JSON APIs. */
+    public final String mode;
+    public final String apiUrl;
+    public final String category;
     public final String baseUrl;
     public final String searchUrl;
     public final String searchItemPattern;
@@ -35,6 +39,9 @@ public final class SiteRule {
 
     private SiteRule(String id,
                      String name,
+                     String mode,
+                     String apiUrl,
+                     String category,
                      String baseUrl,
                      String searchUrl,
                      String searchItemPattern,
@@ -52,6 +59,9 @@ public final class SiteRule {
                      Map<String, String> headers) {
         this.id = id;
         this.name = name;
+        this.mode = mode;
+        this.apiUrl = apiUrl;
+        this.category = category;
         this.baseUrl = baseUrl;
         this.searchUrl = searchUrl;
         this.searchItemPattern = searchItemPattern;
@@ -87,7 +97,16 @@ public final class SiteRule {
             }
         }
 
-        String baseUrl = root.optString("baseUrl", "");
+        String apiUrl = root.optString("api", "");
+        String mode = root.optString("mode", "");
+        if (mode.length() == 0 && root.optInt("type", 0) == 1) {
+            mode = "cms";
+        }
+        if (mode.length() == 0) {
+            mode = "html";
+        }
+        String baseUrl = root.optString("baseUrl", apiUrl);
+        String category = root.optString("category", root.optString("typeName", ""));
         String id = root.optString("id", "rule-" + Math.abs(baseUrl.hashCode()));
         String name = root.optString("name", id);
         String searchUrl = opt(search, root, "url", "searchUrl", "");
@@ -107,10 +126,10 @@ public final class SiteRule {
         String userAgent = root.optString("userAgent",
                 "TVBox-TCL/1.0 (Android 4.2; public-media-client)");
 
-        if (baseUrl.length() == 0 && searchUrl.length() == 0) {
+        if (baseUrl.length() == 0 && searchUrl.length() == 0 && apiUrl.length() == 0) {
             throw new JSONException("rule needs baseUrl or search.url");
         }
-        return new SiteRule(id, name, baseUrl, searchUrl, searchPattern,
+        return new SiteRule(id, name, mode, apiUrl, category, baseUrl, searchUrl, searchPattern,
                 searchTitleGroup, searchUrlGroup, searchFilter,
                 episodePattern, episodeTitleGroup, episodeUrlGroup,
                 episodeFilter, videoPattern, videoGroup, charset,
@@ -135,5 +154,9 @@ public final class SiteRule {
 
     public String displayName() {
         return name + " (" + id + ")";
+    }
+
+    public boolean isCms() {
+        return "cms".equalsIgnoreCase(mode);
     }
 }
