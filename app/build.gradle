@@ -31,7 +31,7 @@ android {
     sourceSets {
         main {
             // Keep editable rule catalog at repository root and bundle it in APK.
-            assets.srcDirs = ['src/main/assets', '../../rules']
+            assets.srcDirs = ['src/main/assets', '../rules']
         }
     }
 
