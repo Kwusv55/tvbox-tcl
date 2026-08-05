@@ -39,3 +39,13 @@ android {
         abortOnError false
     }
 }
+
+dependencies {
+    // ExoPlayer 2.12 keeps API 16+ support and handles HLS master playlists
+    // more reliably than the legacy VideoView on Android 4.x firmware.
+    implementation 'com.google.android.exoplayer:exoplayer-core:2.13.3'
+    implementation 'com.google.android.exoplayer:exoplayer-hls:2.13.3'
+    implementation 'com.google.android.exoplayer:exoplayer-ui:2.13.3'
+    // QR opens file import on a phone without typing the TV address or PIN.
+    implementation 'com.google.zxing:core:3.3.3'
+}

@@ -17,6 +17,11 @@ import java.util.List;
 public final class RuleCatalog {
     public static final String REMOTE_URL =
             "https://raw.githubusercontent.com/Kwusv55/tvbox-tcl/master/rules/anime.json";
+    private static final String[] REMOTE_URLS = new String[]{
+            REMOTE_URL,
+            "https://cdn.jsdelivr.net/gh/Kwusv55/tvbox-tcl@master/rules/anime.json",
+            "https://fastly.jsdelivr.net/gh/Kwusv55/tvbox-tcl@master/rules/anime.json"
+    };
     private static final String PREFS = "tcl-tvbox-catalog";
     private static final String JSON = "json";
     private static final String SOURCE = "source";
@@ -64,9 +69,23 @@ public final class RuleCatalog {
     }
 
     public static String fetchRemote() throws IOException, JSONException {
-        String raw = HttpClient.get(REMOTE_URL, null).text("UTF-8");
-        RuleStore.parseMany(raw);
-        return raw;
+        IOException lastIo = null;
+        JSONException lastJson = null;
+        for (String url : REMOTE_URLS) {
+            try {
+                String raw = HttpClient.get(url, null).text("UTF-8");
+                RuleStore.parseMany(raw);
+                return raw;
+            } catch (IOException error) {
+                lastIo = error;
+            } catch (JSONException error) {
+                lastJson = error;
+            }
+        }
+        if (lastJson != null) {
+            throw lastJson;
+        }
+        throw lastIo == null ? new IOException("no rule update endpoint") : lastIo;
     }
 
     private static String readAsset(Context context, String name) throws IOException {

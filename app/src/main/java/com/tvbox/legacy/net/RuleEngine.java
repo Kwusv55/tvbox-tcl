@@ -67,7 +67,11 @@ public final class RuleEngine {
             if (!passesFilter(title, href, rule.searchFilter)) {
                 continue;
             }
-            results.add(new VideoSource(cleanText(title), resolveUrl(requestUrl, href), "", rule.id));
+            String cleanTitle = cleanText(title);
+            if (!matchesKeyword(cleanTitle, keyword)) {
+                continue;
+            }
+            results.add(new VideoSource(cleanTitle, resolveUrl(requestUrl, href), "", rule.id));
         }
         return results;
     }
@@ -91,6 +95,7 @@ public final class RuleEngine {
         List<VideoSource> merged = new ArrayList<VideoSource>();
         Set<String> seen = new HashSet<String>();
         int failed = 0;
+        final String query = keyword == null ? "" : keyword.trim();
         try {
             for (Future<List<VideoSource>> future : futures) {
                 try {
@@ -114,7 +119,15 @@ public final class RuleEngine {
         Collections.sort(merged, new Comparator<VideoSource>() {
             @Override
             public int compare(VideoSource left, VideoSource right) {
-                return left.title.compareToIgnoreCase(right.title);
+                int score = relevance(right.title, query) - relevance(left.title, query);
+                if (score == 0) {
+                    score = relevance(right.matchText, query) - relevance(left.matchText, query);
+                }
+                if (score != 0) {
+                    return score;
+                }
+                score = left.title.compareToIgnoreCase(right.title);
+                return score != 0 ? score : left.sourceId.compareToIgnoreCase(right.sourceId);
             }
         });
         return new SearchResult(merged, failed);
@@ -156,22 +169,25 @@ public final class RuleEngine {
         if (TextUtils.isEmpty(pageUrl)) {
             throw new IOException("empty video URL");
         }
-        if (looksLikeMedia(pageUrl)) {
-            return pageUrl;
+        String normalizedPageUrl = cleanPlayableUrl(pageUrl);
+        if (looksLikeMedia(normalizedPageUrl)) {
+            return normalizedPageUrl;
         }
-        String html = requestText(rule, pageUrl);
+        String html = requestText(rule, normalizedPageUrl)
+                .replace("\\/", "/")
+                .replace("\\u0026", "&");
         if (!TextUtils.isEmpty(rule.videoUrlPattern)) {
             Matcher matcher = compile(rule.videoUrlPattern).matcher(html);
             if (matcher.find()) {
                 String value = group(matcher, rule.videoUrlGroup);
                 if (!TextUtils.isEmpty(value)) {
-                    return resolveUrl(pageUrl, value);
+                    return resolveUrl(normalizedPageUrl, cleanPlayableUrl(value));
                 }
             }
         }
         Matcher mediaMatcher = MEDIA_URL.matcher(html);
         if (mediaMatcher.find()) {
-            return mediaMatcher.group();
+            return cleanPlayableUrl(mediaMatcher.group());
         }
         throw new IOException("no playable URL found");
     }
@@ -220,8 +236,15 @@ public final class RuleEngine {
                 if (TextUtils.isEmpty(title) || TextUtils.isEmpty(id)) {
                     continue;
                 }
-                results.add(new VideoSource(title, cmsDetailUrl(rule, id),
-                        item.optString("vod_pic", item.optString("pic", "")), rule.id));
+                String aliases = title + " "
+                        + item.optString("vod_sub", "") + " "
+                        + item.optString("vod_en", "") + " "
+                        + item.optString("vod_class", "");
+                if (!matchesKeyword(aliases, keyword)) {
+                    continue;
+                }
+                results.add(new VideoSource(cleanText(title), cmsDetailUrl(rule, id),
+                        item.optString("vod_pic", item.optString("pic", "")), rule.id, aliases));
             }
             return results;
         } catch (Exception error) {
@@ -274,6 +297,7 @@ public final class RuleEngine {
                 int separator = entry.indexOf('$');
                 String title = separator > 0 ? entry.substring(0, separator) : "第" + (index + 1) + "集";
                 String url = separator > 0 ? entry.substring(separator + 1) : entry;
+                url = cleanPlayableUrl(url);
                 if (url.length() > 0) {
                     episodes.add(new Episode(title.trim(), url.trim()));
                 }
@@ -343,10 +367,96 @@ public final class RuleEngine {
                 || lower.contains(".m4v") || lower.contains(".flv");
     }
 
+    private static String cleanPlayableUrl(String value) {
+        if (value == null) {
+            return "";
+        }
+        String result = value.trim().replace("\\/", "/");
+        result = result.replace("\\u0026", "&");
+        int pipe = result.indexOf('|');
+        if (pipe > 0) {
+            result = result.substring(0, pipe);
+        }
+        try {
+            String decoded = java.net.URLDecoder.decode(result, "UTF-8");
+            if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+                result = decoded;
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
     private static boolean passesFilter(String title, String url, String filter) {
         return TextUtils.isEmpty(filter)
                 || (title + " " + url).toLowerCase(Locale.US)
                 .contains(filter.toLowerCase(Locale.US));
+    }
+
+    private static boolean matchesKeyword(String value, String keyword) {
+        String query = normalizeSearch(keyword);
+        if (query.length() == 0) {
+            return false;
+        }
+        String haystack = normalizeSearch(value);
+        if (haystack.indexOf(query) >= 0) {
+            return true;
+        }
+        String compactQuery = query.replace(" ", "");
+        String compactHaystack = haystack.replace(" ", "");
+        if (compactQuery.length() >= 2 && compactHaystack.indexOf(compactQuery) >= 0) {
+            return true;
+        }
+        String[] tokens = query.split(" ");
+        for (String token : tokens) {
+            if (token.length() > 1 && compactHaystack.indexOf(token) < 0) {
+                return false;
+            }
+        }
+        return tokens.length > 1;
+    }
+
+    private static int relevance(String value, String keyword) {
+        String query = normalizeSearch(keyword);
+        String haystack = normalizeSearch(value);
+        if (query.length() == 0 || haystack.length() == 0) {
+            return 0;
+        }
+        if (haystack.equals(query)) {
+            return 1000;
+        }
+        if (haystack.startsWith(query)) {
+            return 900;
+        }
+        if (haystack.indexOf(query) >= 0) {
+            return 800;
+        }
+        String compactQuery = query.replace(" ", "");
+        String compactHaystack = haystack.replace(" ", "");
+        if (compactHaystack.indexOf(compactQuery) >= 0) {
+            return 750;
+        }
+        return matchesKeyword(value, keyword) ? 500 : 0;
+    }
+
+    private static String normalizeSearch(String value) {
+        if (value == null) {
+            return "";
+        }
+        String lower = value.toLowerCase(Locale.US).trim();
+        StringBuilder result = new StringBuilder(lower.length());
+        boolean separated = false;
+        for (int index = 0; index < lower.length(); index++) {
+            char c = lower.charAt(index);
+            if (Character.isLetterOrDigit(c) || (c >= 0x3400 && c <= 0x9fff)) {
+                result.append(c);
+                separated = false;
+            } else if (!separated) {
+                result.append(' ');
+                separated = true;
+            }
+        }
+        return result.toString().trim().replaceAll(" +", " ");
     }
 
     private static Pattern compileOrDefault(String expression, Pattern fallback) {

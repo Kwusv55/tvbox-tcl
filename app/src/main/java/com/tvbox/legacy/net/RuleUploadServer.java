@@ -30,6 +30,7 @@ import java.util.Map;
  */
 public final class RuleUploadServer {
     public static final int DEFAULT_PORT = 8765;
+    public static final int FALLBACK_PORT = 8080;
     public static final int MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
     public static final int DEFAULT_SOCKET_TIMEOUT_MS = 15 * 1000;
 

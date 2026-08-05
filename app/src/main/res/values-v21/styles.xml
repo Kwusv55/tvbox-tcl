@@ -2,10 +2,16 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Holo.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowBackground">@color/tvbox_background</item>
+        <item name="android:windowBackground">@drawable/anime_background</item>
         <item name="android:colorAccent">@color/tvbox_accent</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:navigationBarColor">@color/tvbox_background</item>
         <item name="android:statusBarColor">@color/tvbox_background</item>
+    </style>
+    <style name="AnimeDialogTheme" parent="android:style/Theme.Holo.Dialog">
+        <item name="android:windowBackground">@drawable/dialog_surface</item>
+        <item name="android:colorAccent">@color/tvbox_accent</item>
+        <item name="android:textColorPrimary">@color/tvbox_text</item>
+        <item name="android:textColorSecondary">@color/tvbox_muted</item>
     </style>
 </resources>

@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
@@ -21,6 +22,7 @@ import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
@@ -33,6 +35,11 @@ import com.tvbox.legacy.net.HttpClient;
 import com.tvbox.legacy.net.RuleCatalog;
 import com.tvbox.legacy.net.RuleEngine;
 import com.tvbox.legacy.net.RuleUploadServer;
+
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -67,6 +74,7 @@ public class MainActivity extends Activity {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         buildUi();
         loadCatalog();
@@ -77,19 +85,19 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, dp(14), pad, dp(10));
-        root.setBackgroundColor(Color.rgb(8, 13, 19));
+        root.setBackgroundResource(R.drawable.anime_background);
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.VERTICAL);
-        TextView eyebrow = label("TCL TVBOX  /  API 17", 11, Color.rgb(86, 214, 255));
+        TextView eyebrow = label("TCL TVBOX  /  ANIME INDEX", 11, Color.rgb(86, 224, 240));
         brand.addView(eyebrow, new LinearLayout.LayoutParams(-1, dp(18)));
         TextView title = label("动漫片库", 28, Color.WHITE);
         brand.addView(title, new LinearLayout.LayoutParams(-1, dp(40)));
         header.addView(brand, new LinearLayout.LayoutParams(0, dp(58), 1));
 
-        syncStatus = label("正在读取规则目录", 13, Color.rgb(164, 180, 194));
+        syncStatus = label("正在读取规则目录", 13, Color.rgb(218, 185, 211));
         syncStatus.setGravity(Gravity.CENTER);
         syncStatus.setBackgroundResource(R.drawable.modern_chip);
         header.addView(syncStatus, new LinearLayout.LayoutParams(dp(220), dp(42)));
@@ -157,7 +165,7 @@ public class MainActivity extends Activity {
         actionRow.addView(uploadButton, actionParams(112));
         content.addView(actionRow, new LinearLayout.LayoutParams(-1, dp(56)));
 
-        resultStatus = label(getString(R.string.empty_results), 13, Color.rgb(145, 163, 178));
+        resultStatus = label(getString(R.string.empty_results), 13, Color.rgb(166, 168, 194));
         content.addView(resultStatus, new LinearLayout.LayoutParams(-1, dp(30)));
         resultList = new ListView(this);
         resultList.setDivider(null);
@@ -309,16 +317,59 @@ public class MainActivity extends Activity {
                 });
         uploadServer.start();
         if (!uploadServer.isRunning()) {
+            uploadServer = new RuleUploadServer(RuleUploadServer.FALLBACK_PORT, pin,
+                    new RuleUploadServer.Callback() {
+                        @Override
+                        public void onRuleUploaded(final String json) {
+                            importCatalog(json, "手机上传");
+                        }
+
+                        @Override
+                        public void onRuleUploaded(final String json, String fileName) {
+                            importCatalog(json, TextUtils.isEmpty(fileName) ? "手机上传" : fileName);
+                        }
+
+                        @Override
+                        public void onError(final Exception error) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    showError("手机上传服务错误: " + shortMessage(error));
+                                }
+                            });
+                        }
+                    });
+            uploadServer.start();
+        }
+        if (!uploadServer.isRunning()) {
             showError("手机上传端口启动失败");
             return;
         }
         uploadButton.setText("停止上传");
-        String url = uploadServer.getUploadUrl(localIp());
-        syncStatus.setText("手机上传 · " + url);
-        new AlertDialog.Builder(this)
+        String uploadUrl = uploadUrl(uploadServer.getPort(), pin);
+        syncStatus.setText("手机上传 · " + uploadServer.getPort());
+        LinearLayout dialogContent = new LinearLayout(this);
+        dialogContent.setOrientation(LinearLayout.VERTICAL);
+        dialogContent.setPadding(dp(24), dp(4), dp(24), dp(8));
+        TextView hint = label("手机扫描二维码，选择规则文件后立即导入。", 15, Color.rgb(213, 226, 239));
+        dialogContent.addView(hint, new LinearLayout.LayoutParams(-1, dp(40)));
+        Bitmap code = createQr(uploadUrl, dp(220));
+        if (code != null) {
+            ImageView qr = new ImageView(this);
+            qr.setImageBitmap(code);
+            qr.setBackgroundColor(Color.WHITE);
+            qr.setPadding(dp(8), dp(8), dp(8), dp(8));
+            LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(dp(220), dp(220));
+            qrParams.gravity = Gravity.CENTER_HORIZONTAL;
+            dialogContent.addView(qr, qrParams);
+        }
+        TextView address = label(uploadUrl + "\nPIN：" + pin, 12, Color.rgb(141, 176, 198));
+        address.setGravity(Gravity.CENTER);
+        address.setPadding(0, dp(10), 0, 0);
+        dialogContent.addView(address, new LinearLayout.LayoutParams(-1, dp(54)));
+        new AlertDialog.Builder(this, R.style.AnimeDialogTheme)
                 .setTitle("手机上传规则")
-                .setMessage("手机与电视连接同一 Wi-Fi。\n\n打开：" + url
-                        + "\nPIN：" + pin + "\n\n上传 JSON 后，电视自动校验并切换目录。")
+                .setView(dialogContent)
                 .setPositiveButton("知道了", null)
                 .show();
     }
@@ -382,8 +433,8 @@ public class MainActivity extends Activity {
         }
         ListView list = new ListView(this);
         list.setDivider(null);
-        list.setAdapter(new ArrayAdapter<Episode>(this, android.R.layout.simple_list_item_1, episodes));
-        final AlertDialog dialog = new AlertDialog.Builder(this)
+        list.setAdapter(new EpisodeAdapter(episodes));
+        final AlertDialog dialog = new AlertDialog.Builder(this, R.style.AnimeDialogTheme)
                 .setTitle("选择剧集")
                 .setView(list)
                 .setNegativeButton("取消", null)
@@ -474,6 +525,59 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private String uploadUrl(int port, String pin) {
+        List<String> addresses = uploadAddresses();
+        String address = addresses.isEmpty() ? "电视IP" : addresses.get(0);
+        return "http://" + address + ":" + port + "/upload?pin=" + pin;
+    }
+
+    private List<String> uploadAddresses() {
+        List<String> addresses = new ArrayList<String>();
+        try {
+            WifiManager wifi = (WifiManager) getSystemService(WIFI_SERVICE);
+            if (wifi != null && wifi.getConnectionInfo() != null
+                    && wifi.getConnectionInfo().getIpAddress() != 0) {
+                addAddress(addresses, Formatter.formatIpAddress(wifi.getConnectionInfo().getIpAddress()));
+            }
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                Enumeration<InetAddress> values = interfaces.nextElement().getInetAddresses();
+                while (values.hasMoreElements()) {
+                    InetAddress address = values.nextElement();
+                    if (!address.isLoopbackAddress() && address.getHostAddress().indexOf(':') < 0) {
+                        addAddress(addresses, address.getHostAddress());
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return addresses;
+    }
+
+    private Bitmap createQr(String value, int size) {
+        try {
+            BitMatrix matrix = new QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, size, size);
+            Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565);
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    bitmap.setPixel(x, y, matrix.get(x, y) ? Color.BLACK : Color.WHITE);
+                }
+            }
+            return bitmap;
+        } catch (WriterException error) {
+            return null;
+        }
+    }
+
+    private static void addAddress(List<String> addresses, String value) {
+        if (value != null && value.length() > 0 && !addresses.contains(value)) {
+            addresses.add(value);
+        }
     }
 
     private String localIp() {
@@ -692,6 +796,38 @@ public class MainActivity extends Activity {
             row.addView(sourceLabel, new LinearLayout.LayoutParams(-1, dp(18)));
             TextView hint = label("选择后读取剧集", 11, Color.rgb(129, 151, 166));
             row.addView(hint, new LinearLayout.LayoutParams(-1, dp(20)));
+            return row;
+        }
+    }
+
+    private final class EpisodeAdapter extends BaseAdapter {
+        private final List<Episode> items;
+
+        EpisodeAdapter(List<Episode> values) {
+            items = values == null ? new ArrayList<Episode>() : values;
+        }
+
+        @Override
+        public int getCount() {
+            return items.size();
+        }
+
+        @Override
+        public Episode getItem(int position) {
+            return items.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            TextView row = label(getItem(position).title, 16, Color.WHITE);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), 0, dp(12), 0);
+            row.setBackgroundResource(R.drawable.modern_dialog_item);
             return row;
         }
     }
