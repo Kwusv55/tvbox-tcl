@@ -6,7 +6,6 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
-import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -35,9 +34,6 @@ import com.tvbox.legacy.net.RuleCatalog;
 import com.tvbox.legacy.net.RuleEngine;
 import com.tvbox.legacy.net.RuleUploadServer;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
@@ -48,8 +44,6 @@ import java.util.Random;
 
 /** Modern D-pad-first TV shell for the API 17 TCL firmware. */
 public class MainActivity extends Activity {
-    private static final int REQUEST_CATALOG_FILE = 17;
-    private static final int MAX_CATALOG_BYTES = 2 * 1024 * 1024;
     private static final String PREFS = "tcl-tvbox-ui";
     private static final String PREF_ACTIVE_ID = "active-rule-id";
 
@@ -134,7 +128,7 @@ public class MainActivity extends Activity {
 
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setGravity(Gravity.CENTER_VERTICAL);
-        searchInput = edit(getString(R.string.search_hint));
+        searchInput = edit("搜索全部来源");
         searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
         actionRow.addView(searchInput, weightedParams(1));
         Button searchButton = action("搜索");
@@ -161,14 +155,6 @@ public class MainActivity extends Activity {
             }
         });
         actionRow.addView(uploadButton, actionParams(112));
-        Button fileButton = action("本地文件");
-        fileButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                chooseCatalogFile();
-            }
-        });
-        actionRow.addView(fileButton, actionParams(104));
         content.addView(actionRow, new LinearLayout.LayoutParams(-1, dp(56)));
 
         resultStatus = label(getString(R.string.empty_results), 13, Color.rgb(145, 163, 178));
@@ -291,27 +277,6 @@ public class MainActivity extends Activity {
         }.execute();
     }
 
-    private void chooseCatalogFile() {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.setType("application/json");
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        try {
-            startActivityForResult(intent, REQUEST_CATALOG_FILE);
-        } catch (RuntimeException error) {
-            showError("系统文件选择不可用，请使用手机上传");
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_CATALOG_FILE || resultCode != RESULT_OK || data == null
-                || data.getData() == null) {
-            return;
-        }
-        new ReadCatalogTask().execute(data.getData());
-    }
-
     private void toggleUploadServer() {
         if (uploadServer != null && uploadServer.isRunning()) {
             uploadServer.stop();
@@ -368,8 +333,8 @@ public class MainActivity extends Activity {
     }
 
     private void search() {
-        if (activeRule == null) {
-            showError("先选择动漫来源");
+        if (catalog.isEmpty()) {
+            showError("没有可用规则");
             return;
         }
         String keyword = searchInput.getText().toString().trim();
@@ -385,8 +350,25 @@ public class MainActivity extends Activity {
         if (source == null || TextUtils.isEmpty(source.detailUrl)) {
             return;
         }
+        SiteRule sourceRule = findRule(source.sourceId);
+        if (sourceRule != null) {
+            activeRule = sourceRule;
+            activeRuleLabel.setText(sourceRule.name);
+        }
         resultStatus.setText("正在读取剧集…");
         new EpisodeTask().execute(source);
+    }
+
+    private SiteRule findRule(String id) {
+        if (TextUtils.isEmpty(id)) {
+            return activeRule;
+        }
+        for (SiteRule rule : catalog) {
+            if (id.equals(rule.id)) {
+                return rule;
+            }
+        }
+        return activeRule;
     }
 
     private void showEpisodes(final List<Episode> episodes) {
@@ -529,35 +511,6 @@ public class MainActivity extends Activity {
         return TextUtils.isEmpty(message) ? error.getClass().getSimpleName() : message;
     }
 
-    private final class ReadCatalogTask extends AsyncTask<Uri, Void, TaskResult<String>> {
-        @Override
-        protected TaskResult<String> doInBackground(Uri... values) {
-            InputStream input = null;
-            try {
-                input = getContentResolver().openInputStream(values[0]);
-                return TaskResult.success(readLimited(input, MAX_CATALOG_BYTES));
-            } catch (Exception error) {
-                return TaskResult.failure(error);
-            } finally {
-                if (input != null) {
-                    try {
-                        input.close();
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
-        }
-
-        @Override
-        protected void onPostExecute(TaskResult<String> result) {
-            if (result.error != null) {
-                showError("读取目录失败: " + shortMessage(result.error));
-            } else {
-                importCatalog(result.value, "本地文件");
-            }
-        }
-    }
-
     private final class ImportCatalogTask extends AsyncTask<String, Void, TaskResult<List<SiteRule>>> {
         private final String source;
         private String raw;
@@ -592,24 +545,25 @@ public class MainActivity extends Activity {
         }
     }
 
-    private final class SearchTask extends AsyncTask<String, Void, TaskResult<List<VideoSource>>> {
+    private final class SearchTask extends AsyncTask<String, Void, TaskResult<RuleEngine.SearchResult>> {
         @Override
-        protected TaskResult<List<VideoSource>> doInBackground(String... values) {
+        protected TaskResult<RuleEngine.SearchResult> doInBackground(String... values) {
             try {
-                return TaskResult.success(RuleEngine.search(activeRule, values[0]));
+                return TaskResult.success(RuleEngine.searchAll(catalog, values[0]));
             } catch (Exception error) {
                 return TaskResult.failure(error);
             }
         }
 
         @Override
-        protected void onPostExecute(TaskResult<List<VideoSource>> result) {
+        protected void onPostExecute(TaskResult<RuleEngine.SearchResult> result) {
             if (result.error != null) {
                 showError("搜索失败: " + shortMessage(result.error));
                 return;
             }
-            videoAdapter.setItems(result.value);
-            resultStatus.setText(String.format(Locale.US, "找到 %d 个结果", result.value.size()));
+            videoAdapter.setItems(result.value.items);
+            resultStatus.setText(String.format(Locale.US, "找到 %d 个结果，%d 个来源失败",
+                    result.value.size(), result.value.failedSources));
         }
     }
 
@@ -653,24 +607,6 @@ public class MainActivity extends Activity {
                 resultStatus.setText("正在播放");
             }
         }
-    }
-
-    private static String readLimited(InputStream input, int limit) throws IOException {
-        if (input == null) {
-            throw new IOException("empty file");
-        }
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8192];
-        int total = 0;
-        int count;
-        while ((count = input.read(buffer)) != -1) {
-            total += count;
-            if (total > limit) {
-                throw new IOException("catalog is too large");
-            }
-            output.write(buffer, 0, count);
-        }
-        return output.toString("UTF-8");
     }
 
     private final class RuleSourceAdapter extends BaseAdapter {
@@ -749,6 +685,11 @@ public class MainActivity extends Activity {
             TextView title = label(item.title, 17, Color.WHITE);
             title.setSingleLine(true);
             row.addView(title, new LinearLayout.LayoutParams(-1, dp(28)));
+            SiteRule source = findRule(item.sourceId);
+            TextView sourceLabel = label(source == null ? "" : source.name, 11,
+                    Color.rgb(86, 214, 255));
+            sourceLabel.setSingleLine(true);
+            row.addView(sourceLabel, new LinearLayout.LayoutParams(-1, dp(18)));
             TextView hint = label("选择后读取剧集", 11, Color.rgb(129, 151, 166));
             row.addView(hint, new LinearLayout.LayoutParams(-1, dp(20)));
             return row;

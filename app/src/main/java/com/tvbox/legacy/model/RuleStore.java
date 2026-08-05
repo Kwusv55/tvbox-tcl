@@ -31,8 +31,13 @@ public final class RuleStore {
             return result;
         }
         JSONObject root = new JSONObject(value);
-        if (root.optJSONArray("sites") != null) {
-            throw new JSONException("qist/tvbox config needs its native player; import a lightweight rule");
+        JSONArray sites = root.optJSONArray("sites");
+        if (sites != null) {
+            addSites(result, sites);
+            if (!result.isEmpty()) {
+                return result;
+            }
+            throw new JSONException("no HTTP CMS sites found");
         }
         JSONArray rules = root.optJSONArray("rules");
         if (rules != null) {
@@ -50,6 +55,27 @@ public final class RuleStore {
             if (item != null) {
                 result.add(SiteRule.fromJson(item));
             }
+        }
+    }
+
+    /** Extract HTTP MacCMS sites from a full TVBox config. */
+    private static void addSites(List<SiteRule> result, JSONArray sites) throws JSONException {
+        for (int index = 0; index < sites.length(); index++) {
+            JSONObject site = sites.optJSONObject(index);
+            if (site == null) {
+                continue;
+            }
+            String api = site.optString("api", "").trim();
+            if (!api.startsWith("http://") && !api.startsWith("https://")) {
+                continue;
+            }
+            JSONObject rule = new JSONObject();
+            rule.put("id", site.optString("key", "site-" + index));
+            rule.put("name", site.optString("name", site.optString("key", "site-" + index)));
+            rule.put("mode", "cms");
+            rule.put("api", api);
+            rule.put("baseUrl", api);
+            result.add(SiteRule.fromJson(rule));
         }
     }
 }

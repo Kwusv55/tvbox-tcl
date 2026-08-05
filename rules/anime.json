@@ -1,14 +1,44 @@
 [
   {
+    "id": "bfzy",
+    "name": "BFZY 影视",
+    "mode": "cms",
+    "api": "https://bfzyapi.com/api.php/provide/vod"
+  },
+  {
+    "id": "liangzi",
+    "name": "量子 影视",
+    "mode": "cms",
+    "api": "https://cj.lziapi.com/api.php/provide/vod"
+  },
+  {
+    "id": "ffzy",
+    "name": "非凡 影视",
+    "mode": "cms",
+    "api": "https://cj.ffzyapi.com/api.php/provide/vod"
+  },
+  {
+    "id": "wujin",
+    "name": "无尽 影视",
+    "mode": "cms",
+    "api": "https://api.wujinapi.me/api.php/provide/vod"
+  },
+  {
+    "id": "apibd",
+    "name": "百度资源",
+    "mode": "cms",
+    "api": "https://api.apibdzy.com/api.php/provide/vod"
+  },
+  {
     "id": "bfzy-anime",
-    "name": "暴风 · 动漫",
+    "name": "BFZY 动漫",
     "mode": "cms",
     "api": "https://bfzyapi.com/api.php/provide/vod",
     "category": "动漫"
   },
   {
     "id": "liangzi-anime",
-    "name": "量子 · 动漫",
+    "name": "量子 动漫",
     "mode": "cms",
     "api": "https://cj.lziapi.com/api.php/provide/vod",
     "category": "动漫"

@@ -15,10 +15,18 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -59,9 +67,57 @@ public final class RuleEngine {
             if (!passesFilter(title, href, rule.searchFilter)) {
                 continue;
             }
-            results.add(new VideoSource(cleanText(title), resolveUrl(requestUrl, href), ""));
+            results.add(new VideoSource(cleanText(title), resolveUrl(requestUrl, href), "", rule.id));
         }
         return results;
+    }
+
+    /** Search every configured source concurrently, matching Kazumi's plugin index behavior. */
+    public static SearchResult searchAll(final List<SiteRule> rules, final String keyword) {
+        if (rules == null || rules.isEmpty()) {
+            return new SearchResult(Collections.<VideoSource>emptyList(), 0);
+        }
+        int workers = Math.max(1, Math.min(6, rules.size()));
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        List<Future<List<VideoSource>>> futures = new ArrayList<Future<List<VideoSource>>>();
+        for (final SiteRule rule : rules) {
+            futures.add(executor.submit(new Callable<List<VideoSource>>() {
+                @Override
+                public List<VideoSource> call() throws Exception {
+                    return search(rule, keyword);
+                }
+            }));
+        }
+        List<VideoSource> merged = new ArrayList<VideoSource>();
+        Set<String> seen = new HashSet<String>();
+        int failed = 0;
+        try {
+            for (Future<List<VideoSource>> future : futures) {
+                try {
+                    List<VideoSource> values = future.get();
+                    for (VideoSource value : values) {
+                        if (merged.size() >= 120) {
+                            break;
+                        }
+                        String key = value.title.toLowerCase(Locale.US).trim() + "\n" + value.detailUrl;
+                        if (seen.add(key)) {
+                            merged.add(value);
+                        }
+                    }
+                } catch (Exception error) {
+                    failed++;
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+        Collections.sort(merged, new Comparator<VideoSource>() {
+            @Override
+            public int compare(VideoSource left, VideoSource right) {
+                return left.title.compareToIgnoreCase(right.title);
+            }
+        });
+        return new SearchResult(merged, failed);
     }
 
     public static List<Episode> episodes(SiteRule rule, String detailUrl) throws IOException {
@@ -165,7 +221,7 @@ public final class RuleEngine {
                     continue;
                 }
                 results.add(new VideoSource(title, cmsDetailUrl(rule, id),
-                        item.optString("vod_pic", item.optString("pic", ""))));
+                        item.optString("vod_pic", item.optString("pic", "")), rule.id));
             }
             return results;
         } catch (Exception error) {
@@ -320,5 +376,19 @@ public final class RuleEngine {
         String text = value == null ? "" : value;
         text = Html.fromHtml(text).toString();
         return text.replaceAll("\\s+", " ").trim();
+    }
+
+    public static final class SearchResult {
+        public final List<VideoSource> items;
+        public final int failedSources;
+
+        SearchResult(List<VideoSource> items, int failedSources) {
+            this.items = items;
+            this.failedSources = failedSources;
+        }
+
+        public int size() {
+            return items.size();
+        }
     }
 }

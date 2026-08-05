@@ -456,8 +456,6 @@ public final class RuleUploadServer {
                 } else if ("rule".equalsIgnoreCase(name) || "json".equalsIgnoreCase(name)
                         || "content".equalsIgnoreCase(name) || "data".equalsIgnoreCase(name)
                         || "file".equalsIgnoreCase(name)) {
-                    // Browser form sends file and textarea together. Keep file
-                    // content when optional textarea is left empty.
                     if (decoded.length() > 0 || rule == null) {
                         rule = decoded;
                     }
@@ -518,10 +516,9 @@ public final class RuleUploadServer {
                 + "padding:12px;font:14px monospace}input,button{font-size:16px;padding:10px 12px;"
                 + "border-radius:8px;margin-top:12px}button{background:#38bdf8;border:0;color:#082f49;"
                 + "font-weight:700;cursor:pointer}.hint{font-size:13px}</style></head><body><main>"
-                + "<h1>TCL TVBox 规则导入</h1><p>从手机选择 JSON 文件或粘贴动漫规则，提交后电视立即更新。</p>"
+                + "<h1>TCL TVBox 规则导入</h1><p>从手机选择规则文件，提交后电视立即更新。</p>"
                 + "<form method=post action=/upload enctype=multipart/form-data>" + pinField
-                + "<p><input type=file name=file accept='.json,application/json'></p>"
-                + "<textarea name=rule placeholder='也可粘贴 JSON 规则'></textarea>"
+                + "<p><input type=file name=file accept='.json,.txt,application/json' required></p>"
                 + "<br><button type=submit>上传规则</button></form><p class=hint>仅限同一局域网使用。</p>"
                 + "</main></body></html>";
     }

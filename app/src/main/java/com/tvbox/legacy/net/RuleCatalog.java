@@ -21,6 +21,8 @@ public final class RuleCatalog {
     private static final String JSON = "json";
     private static final String SOURCE = "source";
     private static final String SYNC_TIME = "sync-time";
+    private static final String VERSION = "version";
+    private static final int CATALOG_VERSION = 2;
     private static final long REFRESH_INTERVAL_MS = 6L * 60L * 60L * 1000L;
     private static final int MAX_BYTES = 2 * 1024 * 1024;
 
@@ -30,7 +32,7 @@ public final class RuleCatalog {
     public static String load(Context context) throws IOException {
         SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String saved = preferences.getString(JSON, "");
-        if (saved.length() > 0) {
+        if (saved.length() > 0 && preferences.getInt(VERSION, 0) >= CATALOG_VERSION) {
             return saved;
         }
         return readAsset(context, "anime.json");
@@ -45,6 +47,7 @@ public final class RuleCatalog {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(JSON, raw)
                 .putString(SOURCE, source == null ? "本地" : source)
+                .putInt(VERSION, CATALOG_VERSION)
                 .putLong(SYNC_TIME, System.currentTimeMillis())
                 .apply();
     }
