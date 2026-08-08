@@ -15,10 +15,10 @@ android {
         versionCode 100
         versionName '1.0.0-tcl'
 
-        // Legacy TCL TVs are 32-bit ARM. Keep x86 for API 17 emulator
-        // validation without packing unneeded 64-bit VLC binaries.
+        // TCL 4.x hardware is 32-bit ARM. Exclude emulator-only x86 VLC
+        // binaries so the APK remains installable on low-storage TVs.
         ndk {
-            abiFilters 'armeabi-v7a', 'x86'
+            abiFilters 'armeabi-v7a'
         }
     }
 
