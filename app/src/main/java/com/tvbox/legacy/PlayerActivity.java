@@ -14,6 +14,7 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.MediaController;
 import android.widget.ProgressBar;
+import android.view.SurfaceView;
 import android.widget.TextView;
 import android.widget.VideoView;
 
@@ -24,9 +25,16 @@ import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
 import com.google.android.exoplayer2.util.Util;
+
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.interfaces.IVLCVout;
+
+import java.util.ArrayList;
 
 /** HLS/MP4 player compatible with the Android 4.x target. */
 public class PlayerActivity extends Activity {
@@ -40,9 +48,13 @@ public class PlayerActivity extends Activity {
     private DefaultDataSourceFactory dataSourceFactory;
     private boolean triedHttpFallback;
     private boolean usingLegacyPlayer;
+    private boolean usingSoftwarePlayer;
     private boolean errorShown;
     private FrameLayout playerRoot;
     private VideoView legacyVideo;
+    private LibVLC libVlc;
+    private org.videolan.libvlc.MediaPlayer softwarePlayer;
+    private SurfaceView softwareSurface;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -88,23 +100,32 @@ public class PlayerActivity extends Activity {
 
         try {
             dataSourceFactory = new DefaultDataSourceFactory(
-                    this, Util.getUserAgent(this, "TCL-TVBOX"));
-            player = ExoPlayerFactory.newSimpleInstance(this);
+                    this, Util.getUserAgent(this,
+                            "Mozilla/5.0 (Linux; Android 4.2; TCL-TVBOX)"));
+            DefaultTrackSelector trackSelector = new DefaultTrackSelector(this);
+            if (Build.VERSION.SDK_INT <= 17) {
+                // API 17 firmware commonly advertises H.264 support but fails on
+                // 1080p High Profile. Prefer a 480p rendition when HLS offers one.
+                trackSelector.setParameters(trackSelector.buildUponParameters()
+                        .setMaxVideoSize(854, 480)
+                        .setForceLowestBitrate(true));
+            }
+            player = ExoPlayerFactory.newSimpleInstance(this, trackSelector);
             playerView.setPlayer(player);
             player.addListener(new Player.EventListener() {
                 @Override
                 public void onPlayerError(ExoPlaybackException error) {
                     if (!triedHttpFallback && currentUrl.startsWith("https://")) {
-                        // Many public media CDNs still expose HTTP. Android 4.2 cannot
-                        // negotiate TLS with some of their modern-only HTTPS endpoints.
+                        // Android 4.x cannot negotiate many modern CDN certificates.
+                        // The same media hosts commonly expose an HTTP playlist.
                         triedHttpFallback = true;
                         preparePlayback("http://" + currentUrl.substring("https://".length()));
                         return;
                     }
-                    if (!usingLegacyPlayer && Build.VERSION.SDK_INT <= 17) {
-                        // Older firmware may expose a decoder through MediaPlayer that
-                        // ExoPlayer rejects during capability probing.
-                        startLegacyPlayer();
+                    if (!usingSoftwarePlayer && Build.VERSION.SDK_INT <= 17
+                            && isDecoderFailure(error)) {
+                        // Hardware decoder failure on API 17: use VLC software decoding.
+                        startSoftwarePlayer();
                         return;
                     }
                     finishWithError("播放失败: " + error.getMessage());
@@ -140,6 +161,21 @@ public class PlayerActivity extends Activity {
         progress.setVisibility(View.VISIBLE);
         player.prepare(source, true, true);
         player.setPlayWhenReady(true);
+    }
+
+    private boolean isDecoderFailure(ExoPlaybackException error) {
+        String message = error == null ? "" : String.valueOf(error.getMessage());
+        Throwable cause = error == null ? null : error.getCause();
+        while (cause != null) {
+            String causeText = String.valueOf(cause.getMessage());
+            if (causeText.contains("MediaCodec") || causeText.contains("Decoder")
+                    || causeText.contains("codec.profileLevel")) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return message.contains("MediaCodec") || message.contains("Decoder")
+                || message.contains("codec.profileLevel");
     }
 
     private void startLegacyPlayer() {
@@ -182,10 +218,92 @@ public class PlayerActivity extends Activity {
         }
     }
 
+    private void startSoftwarePlayer() {
+        usingSoftwarePlayer = true;
+        if (player != null) {
+            player.release();
+            player = null;
+        }
+        if (playerView != null) {
+            playerView.setVisibility(View.GONE);
+        }
+        softwareSurface = new SurfaceView(this);
+        softwareSurface.setKeepScreenOn(true);
+        playerRoot.addView(softwareSurface, 1, new FrameLayout.LayoutParams(-1, -1));
+        try {
+            ArrayList<String> options = new ArrayList<String>();
+            options.add("--network-caching=1500");
+            options.add("--file-caching=1500");
+            options.add("--http-reconnect");
+            options.add("--no-drop-late-frames");
+            options.add("--no-skip-frames");
+            libVlc = new LibVLC(this, options);
+            libVlc.setUserAgent("TCL-TVBOX", "Mozilla/5.0 (Linux; Android 4.2; TCL-TVBOX)");
+            softwarePlayer = new org.videolan.libvlc.MediaPlayer(libVlc);
+            IVLCVout vout = softwarePlayer.getVLCVout();
+            vout.setVideoView(softwareSurface);
+            vout.attachViews();
+            softwarePlayer.setEventListener(new org.videolan.libvlc.MediaPlayer.EventListener() {
+                @Override
+                public void onEvent(org.videolan.libvlc.MediaPlayer.Event event) {
+                    if (event.type == org.videolan.libvlc.MediaPlayer.Event.Playing) {
+                        progress.setVisibility(View.GONE);
+                    } else if (event.type == org.videolan.libvlc.MediaPlayer.Event.Buffering) {
+                        progress.setVisibility(View.VISIBLE);
+                    } else if (event.type == org.videolan.libvlc.MediaPlayer.Event.EncounteredError) {
+                        if (!triedHttpFallback && currentUrl.startsWith("https://")) {
+                            triedHttpFallback = true;
+                            releaseSoftwarePlayer();
+                            usingSoftwarePlayer = false;
+                            currentUrl = "http://" + currentUrl.substring("https://".length());
+                            startSoftwarePlayer();
+                            return;
+                        }
+                        finishWithError("播放失败: 软件解码器无法处理此流");
+                    }
+                }
+            });
+            Media media = new Media(libVlc, Uri.parse(currentUrl));
+            media.setHWDecoderEnabled(false, false);
+            media.addOption(":network-caching=1500");
+            softwarePlayer.setMedia(media);
+            media.release();
+            progress.setVisibility(View.VISIBLE);
+            softwarePlayer.play();
+        } catch (RuntimeException error) {
+            releaseSoftwarePlayer();
+            // Keep the platform path as a final fallback if native VLC setup fails.
+            startLegacyPlayer();
+        }
+    }
+
+    private void releaseSoftwarePlayer() {
+        if (softwarePlayer != null) {
+            try {
+                softwarePlayer.stop();
+                softwarePlayer.getVLCVout().detachViews();
+            } catch (RuntimeException ignored) {
+            }
+            softwarePlayer.release();
+            softwarePlayer = null;
+        }
+        if (libVlc != null) {
+            libVlc.release();
+            libVlc = null;
+        }
+        if (softwareSurface != null && playerRoot != null) {
+            playerRoot.removeView(softwareSurface);
+            softwareSurface = null;
+        }
+    }
+
     @Override
     protected void onPause() {
         if (player != null) {
             player.setPlayWhenReady(false);
+        }
+        if (softwarePlayer != null && softwarePlayer.isPlaying()) {
+            softwarePlayer.pause();
         }
         if (legacyVideo != null && legacyVideo.isPlaying()) {
             legacyVideo.pause();
@@ -198,6 +316,9 @@ public class PlayerActivity extends Activity {
         super.onResume();
         if (player != null) {
             player.setPlayWhenReady(true);
+        }
+        if (softwarePlayer != null) {
+            softwarePlayer.play();
         }
         if (legacyVideo != null) {
             legacyVideo.start();
@@ -214,6 +335,7 @@ public class PlayerActivity extends Activity {
             legacyVideo.stopPlayback();
             legacyVideo = null;
         }
+        releaseSoftwarePlayer();
         super.onDestroy();
     }
 

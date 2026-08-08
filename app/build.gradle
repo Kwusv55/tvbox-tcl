@@ -14,6 +14,12 @@ android {
         targetSdk 25
         versionCode 100
         versionName '1.0.0-tcl'
+
+        // Legacy TCL TVs are 32-bit ARM. Keep x86 for API 17 emulator
+        // validation without packing unneeded 64-bit VLC binaries.
+        ndk {
+            abiFilters 'armeabi-v7a', 'x86'
+        }
     }
 
     buildTypes {
@@ -46,6 +52,8 @@ dependencies {
     implementation 'com.google.android.exoplayer:exoplayer-core:2.13.3'
     implementation 'com.google.android.exoplayer:exoplayer-hls:2.13.3'
     implementation 'com.google.android.exoplayer:exoplayer-ui:2.13.3'
+    // Software H.264 fallback for API 17 decoders that reject High Profile streams.
+    implementation 'org.videolan.android:libvlc-all:3.4.9'
     // QR opens file import on a phone without typing the TV address or PIN.
     implementation 'com.google.zxing:core:3.3.3'
 }
